@@ -57,20 +57,49 @@ class WebhookController extends \PHPCI\Controller
         $response = new b8\Http\Response\JsonResponse();
         $response->setContent(array('status' => 'ok'));
 
-        $payload = json_decode($this->getParam('payload'), true);
+        // Support both old services and new webhooks
+        if ($payload = $this->getParam('payload')) {
+            $payload = json_decode($payload, true);
 
-        foreach ($payload['commits'] as $commit) {
-            try {
-                $email = $commit['raw_author'];
-                $email = substr($email, 0, strpos($email, '>'));
-                $email = substr($email, strpos($email, '<') + 1);
+            foreach ($payload['commits'] as $commit) {
+                try {
+                    $email = $commit['raw_author'];
+                    $email = substr($email, 0, strpos($email, '>'));
+                    $email = substr($email, strpos($email, '<') + 1);
 
-                $this->createBuild($project, $commit['raw_node'], $commit['branch'], $email, $commit['message']);
-            } catch (\Exception $ex) {
-                $response->setResponseCode(500);
-                $response->setContent(array('status' => 'failed', 'error' => $ex->getMessage()));
-                break;
+                    $this->createBuild($project, $commit['raw_node'], $commit['branch'], $email, $commit['message']);
+                } catch (\Exception $ex) {
+                    $response->setResponseCode(500);
+                    $response->setContent(array('status' => 'failed', 'error' => $ex->getMessage()));
+                    break;
+                }
             }
+        } else {
+            $payload = json_decode(file_get_contents("php://input"), true);
+            if (empty($payload['push']['changes'])) {
+                $response->setResponseCode(500);
+                $response->setContent(array('status' => 'failed', 'error' => 'no push changes!'));
+            }
+            $results = array();
+            $status = 'failed';
+            foreach ($payload['push']['changes'] as $commit) {
+                try {
+                    $email = $commit['new']['target']['author']['raw'];
+                    $email = substr($email, 0, strpos($email, '>'));
+                    $email = substr($email, strpos($email, '<') + 1);
+                    $results[$commit['new']['target']['hash']] = $this->createBuild(
+                        $project,
+                        $commit['new']['target']['hash'],
+                        $commit['new']['name'],
+                        $email,
+                        $commit['new']['target']['message']
+                    );
+                    $status = 'ok';
+                } catch (Exception $ex) {
+                    $results[$commit['new']['target']['hash']] = array('status' => 'failed', 'error' => $ex->getMessage());
+                }
+            }
+            $response->setContent(array('status' => $status, 'commits' => $results));
         }
 
         return $response;
